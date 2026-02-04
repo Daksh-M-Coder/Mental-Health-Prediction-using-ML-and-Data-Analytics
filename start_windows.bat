@@ -139,7 +139,8 @@ echo ======================================================
 echo 🚀 LAUNCHING MENTAL HEALTH PREDICTION SYSTEM
 echo ======================================================
 echo.
-echo The application will be available at: http://127.0.0.1:7860
+echo The application will attempt to start at: http://127.0.0.1:7860
+echo If port 7860 is busy, it will try ports 7861-7870
 echo Press Ctrl+C to stop the application
 echo.
 echo Starting server...

@@ -26,7 +26,8 @@ pip install -r requirements.txt
 python mental_health_ml_system.py
 ```
 
-The application will be available at: `http://127.0.0.1:7860`
+The application will attempt to start at: `http://127.0.0.1:7860`
+If port 7860 is busy, it will automatically try ports 7861-7870 until it finds an available port.
 
 ## 📊 System Architecture
 

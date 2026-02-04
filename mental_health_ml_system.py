@@ -342,8 +342,13 @@ def load_explanation_cards():
     for number, filename in card_files.items():
         try:
             if number == 13:  # Special handling for the real code and results file
-                with open(f"{filename}", 'r', encoding='utf-8') as f:
-                    cards[number] = f.read()
+                # Try root directory first, then insights folder
+                try:
+                    with open(f"{filename}", 'r', encoding='utf-8') as f:
+                        cards[number] = f.read()
+                except FileNotFoundError:
+                    with open(f"insights/{filename}", 'r', encoding='utf-8') as f:
+                        cards[number] = f.read()
             else:
                 with open(f"insights/{filename}", 'r', encoding='utf-8') as f:
                     cards[number] = f.read()
@@ -912,9 +917,28 @@ def main():
     
     print(Fore.YELLOW + "🌐 Launching Gradio interface on localhost:7860")
     logger.info("Launching Gradio interface on localhost:7860")
+    # Try to launch on port 7860, if unavailable try alternatives
+    import socket
+    def is_port_available(port):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(('localhost', port)) != 0
+    
+    # Find available port starting from 7860
+    port = 7860
+    while not is_port_available(port) and port <= 7870:
+        print(Fore.YELLOW + f"⚠️  Port {port} is in use, trying {port + 1}...")
+        port += 1
+    
+    if not is_port_available(port):
+        print(Fore.RED + "❌ No available ports found in range 7860-7870")
+        return
+    
+    print(Fore.CYAN + f"🌐 Launching Gradio interface on localhost:{port}")
+    logger.info(f"Launching Gradio interface on localhost:{port}")
+    
     app.launch(
         server_name="127.0.0.1",
-        server_port=7860,
+        server_port=port,
         share=False,
         show_error=True,
         quiet=False
