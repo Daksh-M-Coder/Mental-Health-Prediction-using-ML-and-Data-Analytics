@@ -1,0 +1,56 @@
+# ============================================================
+# Universal AI Agent Template — Python Dependencies
+# ============================================================
+# Install with: pip install -r requirements.txt
+# Python version: 3.10+ required (for TypedDict, match-case, etc.)
+# ============================================================
+
+# ─── LANGGRAPH (core agent framework) ────────────────────────
+# LangGraph: stateful multi-actor graph for LLM agents
+# LangChain-core: required by LangGraph for message types
+langgraph>=0.2.0
+langchain-core>=0.3.0
+
+# ─── LLM BACKENDS ────────────────────────────────────────────
+# Groq SDK: fast cloud LLM inference (FREE tier available)
+# Install: pip install groq
+# Keys at: https://console.groq.com
+groq>=0.9.0
+
+# Ollama: local LLM runner (optional — only if using AGENT_BACKEND=ollama)
+# The ollama Python client (used as fallback check only — raw urllib used for calls)
+# ollama>=0.1.0   # uncomment if you need the Python client
+
+# Google Gemini: cloud LLM (optional — only if using AGENT_BACKEND=gemini)
+# google-generativeai>=0.8.0   # uncomment if using Gemini
+
+# ─── CORE PYTHON STDLIB (no install needed) ──────────────────
+# The following are used but bundled with Python (no pip needed):
+#   json, os, re, time, random, sys, pathlib, datetime
+#   urllib.request, urllib.error, http.server, sqlite3
+#   argparse, traceback, typing
+
+# ─── OPTIONAL DEPENDENCIES ────────────────────────────────────
+# Uncomment these if you extend the template with additional features:
+
+# Database adapters (for PostgreSQL/MySQL instead of SQLite):
+# sqlalchemy>=2.0.0
+# psycopg2-binary>=2.9.0    # PostgreSQL
+# pymysql>=1.0.0             # MySQL
+
+# Vector store (for semantic episode retrieval):
+# faiss-cpu>=1.7.0           # Facebook AI Similarity Search
+# numpy>=1.24.0              # Required by FAISS
+
+# PDF report generation:
+# reportlab>=4.0.0           # PDF generation
+# weasyprint>=60.0           # HTML→PDF conversion
+
+# Async support (if you want async HTTP server):
+# aiohttp>=3.9.0             # Async HTTP server
+# fastapi>=0.110.0           # FastAPI (better than BaseHTTPRequestHandler)
+# uvicorn>=0.27.0            # ASGI server for FastAPI
+
+# Data processing (for ML features):
+# pandas>=2.0.0              # Data manipulation
+# scikit-learn>=1.3.0        # ML models (IsolationForest, etc.)
