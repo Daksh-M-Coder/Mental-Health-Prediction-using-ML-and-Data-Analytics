@@ -1,13 +1,48 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { sendInterviewMessage, scoreConversation, predictFromFeatures } from "../lib/api";
+import { sendInterviewMessage, scoreConversation, predictFromFeatures, saveConversation } from "../lib/api";
 import { ResultCard } from "./ManualAssess";
 
+// ── Empathy Map Export helper ─────────────────────────────────────────────────
+function exportEmpathyMap(empathyMap, format) {
+  const ts = new Date().toISOString().slice(0,10);
+  if (format === "json") {
+    const blob = new Blob([JSON.stringify(empathyMap, null, 2)], { type: "application/json" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `empathy_map_${ts}.json`; a.click();
+  } else if (format === "csv") {
+    const rows = [["quadrant","entry"]];
+    for (const [k, items] of Object.entries(empathyMap)) {
+      for (const item of (items || [])) rows.push([k, `"${item.replace(/"/g, "'")}"`]);
+    }
+    const blob = new Blob([rows.map(r=>r.join(",")).join("\n")], { type: "text/csv" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `empathy_map_${ts}.csv`; a.click();
+  } else if (format === "md") {
+    const icons = { says:"💬", thinks:"🧠", does:"🏃", feels:"❤️" };
+    const lines = ["# 📡 Empathy Map Export", `Generated: ${new Date().toLocaleString()}`, ""];
+    for (const [k, items] of Object.entries(empathyMap)) {
+      lines.push(`## ${icons[k]||""} ${k.toUpperCase()}`);
+      for (const item of (items || [])) lines.push(`- ${item}`);
+      lines.push("");
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob);
+    a.download = `empathy_map_${ts}.md`; a.click();
+  }
+}
+
 const C = {
-  text: "#f0f4ff", muted: "rgba(240,244,255,0.55)", dim: "rgba(240,244,255,0.35)",
-  accent: "#6c8eff", accentGlow: "rgba(108,142,255,0.35)",
-  green: "#4ade80", amber: "#fbbf24", red: "#f87171", purple: "#a78bfa",
-  surface: "rgba(255,255,255,0.06)", border: "rgba(255,255,255,0.12)",
+  // These are CSS var() refs — auto-adapt to light/dark theme
+  text:   "var(--c-text)",
+  muted:  "var(--c-muted)",
+  dim:    "var(--c-dim)",
+  surface:"var(--c-surface)",
+  border: "var(--c-border)",
+  // Status colours — stay vivid in both themes
+  accent: "var(--accent)",  accentGlow: "var(--accent-glow)",
+  green:  "var(--green)",   amber: "var(--amber)",
+  red:    "var(--red)",     purple: "var(--purple)",
 };
 
 const EMPATHY_CONFIG = {
@@ -38,69 +73,287 @@ function TypingIndicator() {
   );
 }
 
-function EmpathyMapPanel({ empathyMap, confidencePct, turnCount }) {
-  const hasData = Object.values(empathyMap).some(arr => arr.length > 0);
+// ── Premium Animated Empathy Map Panel ───────────────────────────────────────
+
+const ANIM_DURATION = 320;
+const PANEL_W = 292;
+
+function EmpathyTag({ item, color, isNew, delay = 0 }) {
   return (
-    <div className="glass" style={{ padding:20, height:"100%", display:"flex", flexDirection:"column", gap:16 }}>
-      {/* Header */}
-      <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-        <div style={{ fontSize:13, fontWeight:700, color:C.muted, letterSpacing:1 }}>📡 EMPATHY MAP</div>
-        <div style={{ fontSize:11, color:C.dim }}>{turnCount} turns</div>
-      </div>
+    <span
+      className="emp-tag"
+      style={{
+        borderColor: `${color}40`,
+        color,
+        background: `${color}0d`,
+        fontWeight: 500,
+        animation: isNew
+          ? `empTagPop 0.5s cubic-bezier(0.34,1.56,0.64,1) ${delay}ms both`
+          : "none",
+      }}
+    >
+      {item}
+    </span>
+  );
+}
 
-      {/* 4 quadrants */}
-      {Object.entries(EMPATHY_CONFIG).map(([key, cfg]) => (
-        <div key={key}>
-          <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:8 }}>
-            <span style={{ fontSize:13 }}>{cfg.icon}</span>
-            <span style={{ fontSize:11, fontWeight:700, color:cfg.color, letterSpacing:0.8 }}>{cfg.label}</span>
-            <span style={{ fontSize:10, color:C.dim }}>{cfg.desc}</span>
+function EmpathyMapPanel({ empathyMap, confidencePct, turnCount, visible, onToggle }) {
+  const prevMapRef = useRef({});
+  const [flashKeys, setFlashKeys] = useState({});
+
+  // Detect newly added items per quadrant → glow flash
+  useEffect(() => {
+    const newFlash = {};
+    for (const key of ["says","thinks","does","feels"]) {
+      const prev = prevMapRef.current[key] || [];
+      const curr = empathyMap[key] || [];
+      if (curr.length > prev.length) newFlash[key] = true;
+    }
+    if (Object.keys(newFlash).length > 0) {
+      setFlashKeys(newFlash);
+      const t = setTimeout(() => {
+        setFlashKeys({});
+        prevMapRef.current = {
+          says:   [...(empathyMap.says   || [])],
+          thinks: [...(empathyMap.thinks || [])],
+          does:   [...(empathyMap.does   || [])],
+          feels:  [...(empathyMap.feels  || [])],
+        };
+      }, 1000);
+      return () => clearTimeout(t);
+    }
+  }, [empathyMap]);
+
+  // New-item sets for staggered tag animation
+  const newItemSets = {};
+  for (const key of ["says","thinks","does","feels"]) {
+    const prev = new Set(prevMapRef.current[key] || []);
+    newItemSets[key] = (empathyMap[key] || []).filter(x => !prev.has(x));
+  }
+
+  const hasData = Object.values(empathyMap).some(a => a.length > 0);
+  const totalTags = Object.values(empathyMap).reduce((s,a) => s + a.length, 0);
+
+  return (
+    // Wrapper: flex row — toggle pill + panel slide
+    <div style={{ display:"flex", alignItems:"stretch", flexShrink:0 }}>
+
+      {/* ── Toggle pill — ALWAYS rendered outside overflow:hidden ── */}
+      <button
+        onClick={onToggle}
+        title={visible ? "Collapse Empathy Map" : "Expand Empathy Map"}
+        aria-label={visible ? "Collapse empathy map" : "Expand empathy map"}
+        style={{
+          alignSelf: "center",
+          width: 24,
+          height: 72,
+          background: visible
+            ? `linear-gradient(180deg, ${C.purple}, ${C.accent})`
+            : `linear-gradient(180deg, ${C.accent}, ${C.purple})`,
+          border: "none",
+          borderRadius: visible ? "8px 0 0 8px" : "0 8px 8px 0",
+          color: "#fff",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: 11,
+          writingMode: "vertical-rl",
+          letterSpacing: 1,
+          boxShadow: visible
+            ? `0 0 16px ${C.purple}55`
+            : `0 0 16px ${C.accent}55`,
+          transition: "all 0.3s cubic-bezier(0.4,0,0.2,1)",
+          flexShrink: 0,
+          order: visible ? 0 : 1,
+        }}
+      >
+        {visible ? "▶" : "◀"}
+      </button>
+
+      {/* ── Sliding panel ── */}
+      <div style={{
+        width: visible ? PANEL_W : 0,
+        minWidth: visible ? PANEL_W : 0,
+        overflow: "hidden",
+        transition: `width ${ANIM_DURATION}ms cubic-bezier(0.4,0,0.2,1), min-width ${ANIM_DURATION}ms cubic-bezier(0.4,0,0.2,1)`,
+        flexShrink: 0,
+      }}>
+        <div
+          className="glass"
+          style={{
+            width: PANEL_W,
+            height: "100%",
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+            padding: "16px 14px",
+            overflow: "hidden",
+            opacity: visible ? 1 : 0,
+            transition: `opacity ${ANIM_DURATION}ms ease`,
+            background: "linear-gradient(160deg, rgba(108,142,255,0.07) 0%, rgba(167,139,250,0.05) 100%)",
+          }}
+        >
+          {/* ── Header ── */}
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+              <span style={{ fontSize:14 }}>📡</span>
+              <span style={{ fontSize:11, fontWeight:800, color:C.accent, letterSpacing:1.2 }}>EMPATHY MAP</span>
+            </div>
+            <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+              {totalTags > 0 && (
+                <span style={{ fontSize:10, color:C.purple, background:`${C.purple}18`, padding:"1px 8px", borderRadius:20, fontWeight:600 }}>
+                  {totalTags} signals
+                </span>
+              )}
+              <span style={{ fontSize:10, color:C.dim }}>{turnCount}t</span>
+            </div>
           </div>
-          <div style={{ minHeight:28, display:"flex", flexWrap:"wrap", gap:4 }}>
-            {(empathyMap[key] || []).length > 0
-              ? (empathyMap[key] || []).map((item, i) => (
-                  <span key={i} className="emp-tag" style={{ borderColor:`${cfg.color}33`, color:cfg.color }}>
-                    {item}
-                  </span>
-                ))
-              : <span style={{ fontSize:11, color:C.dim, fontStyle:"italic" }}>Listening...</span>
-            }
+
+          {/* ── 4 Quadrants ── */}
+          <div style={{ display:"flex", flexDirection:"column", gap:8, flex:1, overflow:"hidden" }}>
+            {Object.entries(EMPATHY_CONFIG).map(([key, cfg]) => {
+              const items = empathyMap[key] || [];
+              const isFlashing = flashKeys[key];
+              const newItems = new Set(newItemSets[key] || []);
+              return (
+                <div
+                  key={key}
+                  style={{
+                    borderRadius: 12,
+                    padding: "9px 11px",
+                    background: isFlashing
+                      ? `linear-gradient(135deg, ${cfg.color}22, ${cfg.color}0a)`
+                      : "rgba(255,255,255,0.03)",
+                    border: `1px solid ${isFlashing ? cfg.color + "66" : cfg.color + "18"}`,
+                    boxShadow: isFlashing ? `0 0 16px ${cfg.color}33, inset 0 0 12px ${cfg.color}11` : "none",
+                    transition: "all 0.45s cubic-bezier(0.4,0,0.2,1)",
+                    flex: items.length > 2 ? "1 1 auto" : "0 0 auto",
+                  }}
+                >
+                  {/* Quadrant header */}
+                  <div style={{ display:"flex", alignItems:"center", gap:5, marginBottom:6 }}>
+                    <span style={{ fontSize:13 }}>{cfg.icon}</span>
+                    <span style={{
+                      fontSize:9, fontWeight:800, letterSpacing:1.2,
+                      color: cfg.color,
+                      textShadow: isFlashing ? `0 0 8px ${cfg.color}` : "none",
+                    }}>
+                      {cfg.label}
+                    </span>
+                    {isFlashing && (
+                      <span style={{
+                        fontSize:8, color:cfg.color, fontWeight:700,
+                        background:`${cfg.color}22`, padding:"1px 5px", borderRadius:10,
+                        animation:"pulse 0.6s infinite",
+                      }}>
+                        ● NEW
+                      </span>
+                    )}
+                  </div>
+                  {/* Tags */}
+                  <div style={{ display:"flex", flexWrap:"wrap", gap:4, minHeight:20 }}>
+                    {items.length > 0
+                      ? items.map((item, i) => (
+                          <EmpathyTag
+                            key={`${key}-${item}`}
+                            item={item}
+                            color={cfg.color}
+                            isNew={newItems.has(item)}
+                            delay={i * 40}
+                          />
+                        ))
+                      : <span style={{ fontSize:9, color:C.dim, fontStyle:"italic" }}>Listening…</span>
+                    }
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        </div>
-      ))}
 
-      {/* Confidence meter */}
-      <div style={{ marginTop:"auto" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", marginBottom:6 }}>
-          <span style={{ fontSize:11, color:C.dim }}>Data Confidence</span>
-          <span style={{ fontSize:12, color:C.accent, fontWeight:600 }}>{confidencePct}%</span>
-        </div>
-        <div className="progress-bar">
-          <div className="progress-fill" style={{ width:`${confidencePct}%`, background:`linear-gradient(90deg, ${C.accent}, ${C.purple})`, boxShadow:`0 0 8px ${C.accentGlow}` }}/>
-        </div>
-        {confidencePct >= 60 && (
-          <div style={{ marginTop:8, fontSize:11, color:C.green, display:"flex", alignItems:"center", gap:5 }}>
-            <span style={{ display:"inline-block", width:6, height:6, borderRadius:"50%", background:C.green, animation:"pulse 2s infinite" }}/>
-            Enough data to score
+          {/* ── Confidence bar ── */}
+          <div style={{ flexShrink:0, paddingTop:4 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", marginBottom:5 }}>
+              <span style={{ fontSize:9, color:C.dim, fontWeight:600, letterSpacing:0.8 }}>CONFIDENCE</span>
+              <span style={{
+                fontSize:11, fontWeight:800, color:C.accent,
+                textShadow: confidencePct >= 60 ? `0 0 8px ${C.accent}` : "none",
+              }}>
+                {confidencePct}%
+              </span>
+            </div>
+            <div style={{ height:8, borderRadius:4, background:"rgba(255,255,255,0.06)", overflow:"hidden", position:"relative" }}>
+              <div style={{
+                height:"100%", borderRadius:4,
+                background: `linear-gradient(90deg, ${C.accent}, ${C.purple})`,
+                width:`${confidencePct}%`,
+                boxShadow: `0 0 12px ${C.accentGlow}`,
+                transition: "width 1s cubic-bezier(0.4,0,0.2,1)",
+              }}/>
+              {/* Sheen effect */}
+              <div style={{
+                position:"absolute", top:0, left:0, right:0, height:"50%",
+                background:"linear-gradient(180deg,rgba(255,255,255,0.15),transparent)",
+                borderRadius:"4px 4px 0 0", pointerEvents:"none",
+              }}/>
+            </div>
+            {confidencePct >= 60 && (
+              <div style={{ marginTop:5, fontSize:9, color:C.green, display:"flex", alignItems:"center", gap:4, fontWeight:600 }}>
+                <span style={{ width:5, height:5, borderRadius:"50%", background:C.green, display:"inline-block", animation:"pulse 2s infinite" }}/>
+                Ready to score
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      {/* 5 Whys depth */}
-      <div>
-        <div style={{ fontSize:11, color:C.dim, marginBottom:6 }}>5 Whys Depth</div>
-        <div style={{ display:"flex", gap:4 }}>
-          {[0,1,2,3,4].map(i => (
-            <div key={i} style={{ flex:1, height:4, borderRadius:2, background: i < Math.min(turnCount, 5) ? C.purple : "rgba(255,255,255,0.1)", transition:"background 0.4s", boxShadow: i < Math.min(turnCount, 5) ? `0 0 6px ${C.purple}` : "none" }}/>
-          ))}
+          {/* ── 5 Whys depth track ── */}
+          <div style={{ flexShrink:0 }}>
+            <div style={{ fontSize:9, color:C.dim, marginBottom:5, fontWeight:600, letterSpacing:0.8 }}>DEPTH</div>
+            <div style={{ display:"flex", gap:3 }}>
+              {[0,1,2,3,4].map(i => {
+                const lit = i < Math.min(turnCount, 5);
+                return (
+                  <div key={i} style={{
+                    flex:1, height:5, borderRadius:3,
+                    background: lit ? C.purple : "rgba(255,255,255,0.08)",
+                    boxShadow: lit ? `0 0 8px ${C.purple}` : "none",
+                    transition: "background 0.5s, box-shadow 0.5s",
+                  }}/>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Empty state */}
+          {!hasData && (
+            <div style={{ textAlign:"center", color:C.dim, fontSize:10, fontStyle:"italic", paddingBottom:4 }}>
+              Share how you're feeling to begin…
+            </div>
+          )}
+
+          {/* ── Empathy Map Export ── */}
+          {hasData && (
+            <div style={{ flexShrink: 0, paddingTop: 6, borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+              <div style={{ fontSize: 9, color: C.dim, fontWeight: 600, letterSpacing: 0.8, marginBottom: 6 }}>EXPORT MAP</div>
+              <div style={{ display: "flex", gap: 5 }}>
+                {["json","csv","md"].map(fmt => (
+                  <button
+                    key={fmt}
+                    onClick={() => exportEmpathyMap(empathyMap, fmt)}
+                    style={{
+                      flex: 1, padding: "4px 0", borderRadius: 8, fontSize: 9, fontWeight: 700,
+                      background: "rgba(108,142,255,0.08)", border: "1px solid rgba(108,142,255,0.2)",
+                      color: C.accent, cursor: "pointer", transition: "all 0.15s", letterSpacing: 0.5,
+                    }}
+                    title={`Export empathy map as .${fmt}`}
+                  >
+                    .{fmt.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
-
-      {!hasData && (
-        <div style={{ textAlign:"center", color:C.dim, fontSize:12, fontStyle:"italic" }}>
-          Share how you're feeling to begin mapping...
-        </div>
-      )}
     </div>
   );
 }
@@ -131,7 +384,48 @@ function ScoringOverlay({ features, onPredict }) {
   );
 }
 
-export default function EmpathyChat({ onNewResult }) {
+// ── Progress Celebration Banner ──────────────────────────────────────────────
+
+function ProgressCelebration({ current, previous }) {
+  if (!previous || !current) return null;
+
+  const depDelta  = (previous.depression_score ?? null) !== null ? Math.round((previous.depression_score - (current.depression_score ?? previous.depression_score))) : 0;
+  const anxDelta  = (previous.anxiety_score    ?? null) !== null ? Math.round((previous.anxiety_score    - (current.anxiety_score    ?? previous.anxiety_score)))    : 0;
+  const sleepDelta= (previous.sleep_hours      ?? null) !== null ? Math.round(((current.sleep_hours ?? previous.sleep_hours) - previous.sleep_hours) * 10) / 10 : 0;
+
+  const improvements = [
+    depDelta  >= 3 && { icon: "🧠", label: "Depression",  delta: `−${depDelta} pts`, positive: true },
+    anxDelta  >= 2 && { icon: "💛", label: "Anxiety",     delta: `−${anxDelta} pts`, positive: true },
+    sleepDelta >= 0.5 && { icon: "😴", label: "Sleep",   delta: `+${sleepDelta}h`,  positive: true },
+  ].filter(Boolean);
+
+  if (improvements.length === 0) return null;
+
+  return (
+    <div className="progress-celebration" style={{ marginTop: 16, marginBottom: 4 }}>
+      <div className="progress-celebration-icon">🎉</div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.green, marginBottom: 6 }}>
+          Progress since last session!
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {improvements.map((item, i) => (
+            <div key={i} style={{
+              display: "flex", alignItems: "center", gap: 5,
+              background: `${C.green}15`, border: `1px solid ${C.green}30`,
+              borderRadius: 20, padding: "3px 12px", fontSize: 11,
+            }}>
+              <span>{item.icon}</span>
+              <span style={{ color: C.green, fontWeight: 600 }}>{item.label}: {item.delta}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function EmpathyChat({ onNewResult, previousSessions = [] }) {
   const [messages, setMessages] = useState([OPENING_MESSAGE]);
   const [input, setInput]       = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -141,8 +435,12 @@ export default function EmpathyChat({ onNewResult }) {
   const [features, setFeatures] = useState(null);
   const [result, setResult]     = useState(null);
   const [crisisDetected, setCrisisDetected] = useState(false);
+  const [crisisDismissed, setCrisisDismissed] = useState(false); // user clicked "I'm safe"
+  const [crisisExpanded, setCrisisExpanded]  = useState(false);  // user clicked "I need help"
   const [error, setError]       = useState(null);
   const [selectedModel, setSelectedModel] = useState(null);
+  const [userName, setUserName] = useState(null); // collected from LLM
+  const [mapVisible, setMapVisible] = useState(true); // empathy map collapsible
   const chatEndRef = useRef(null);
   const inputRef   = useRef(null);
 
@@ -185,13 +483,29 @@ export default function EmpathyChat({ onNewResult }) {
       const aiMsg = { role:"assistant", content:res.reply };
       setMessages(prev => [...prev, aiMsg]);
 
+      // Track user name once the LLM collects it
+      if (res.user_name && !userName) setUserName(res.user_name);
+
       if (res.crisis_detected) {
         setCrisisDetected(true);
-        setPhase("crisis");
+        // Don't change phase — conversation continues per project philosophy
       } else if (res.ready_to_score) {
-        setPhase("scoring");
-        // Auto-trigger scoring
-        await triggerScore([...history, aiMsg]);
+        if (res.prediction) {
+          // Auto-triggered by backend — result already in response
+          setFeatures(res.features);
+          setResult(res.prediction);
+          setPhase("result");
+          onNewResult?.({
+            ...res.features, ...res.prediction,
+            timestamp: Date.now(), source: "empathy-chat",
+            userName: res.user_name || userName,
+            snippet: messages.find(m => m.role === "user")?.content?.slice(0, 80) || "Chat session",
+            crisis: false,
+          });
+        } else {
+          setPhase("scoring");
+          await triggerScore([...history, aiMsg]);
+        }
       }
     } catch (e) {
       setError(`Interview error: ${e.message}`);
@@ -229,7 +543,24 @@ export default function EmpathyChat({ onNewResult }) {
       const predRes = await predictFromFeatures(features);
       setResult(predRes);
       setPhase("result");
-      onNewResult?.({ ...features, ...predRes, timestamp:Date.now(), source:"empathy-chat" });
+      const sessionId = `sess_${Date.now()}`;
+      const resultData = {
+        ...features, ...predRes,
+        id: sessionId,
+        timestamp: Date.now(), source: "empathy-chat",
+        userName,
+        snippet: messages.find(m => m.role === "user")?.content?.slice(0, 80) || "Chat session",
+        crisis: crisisDetected,
+        empathy_map: empathyMap,
+      };
+      onNewResult?.(resultData);
+      // Persist full conversation to MongoDB
+      saveConversation(
+        sessionId,
+        messages,
+        empathyMap,
+        { source: "empathy-chat", snippet: resultData.snippet, user_name: userName }
+      ).catch(() => {}); // fire-and-forget
       setMessages(prev => [...prev, {
         role: "assistant",
         content: `Based on everything you shared, here's your assessment. Risk level: **${predRes.risk}** with ${Math.round(predRes.confidence)}% confidence.\n\n${predRes.summary}`,
@@ -245,7 +576,9 @@ export default function EmpathyChat({ onNewResult }) {
     setInput(""); setIsTyping(false); setPhase("interview");
     setEmpathyMap({ says:[], thinks:[], does:[], feels:[] });
     setConfidencePct(0); setFeatures(null); setResult(null);
-    setCrisisDetected(false); setError(null);
+    setCrisisDetected(false); setCrisisDismissed(false); setCrisisExpanded(false);
+    setError(null);
+    // Note: we intentionally keep userName across sessions so we don't ask every time
   };
 
   const handleKey = (e) => {
@@ -253,15 +586,15 @@ export default function EmpathyChat({ onNewResult }) {
   };
 
   return (
-    <div style={{ display:"grid", gridTemplateColumns:"1fr 300px", gap:20, height:"75vh", minHeight:600 }} className="fade-up">
+    <div style={{ display:"flex", gap:20, height:"75vh", minHeight:600, position:"relative" }} className="fade-up">
 
-      {/* LEFT: Chat panel */}
-      <div className="glass" style={{ display:"flex", flexDirection:"column", overflow:"hidden" }}>
+      {/* LEFT: Chat panel — takes remaining space */}
+      <div className="glass" style={{ display:"flex", flexDirection:"column", overflow:"hidden", flex:1, minWidth:0 }}>
         {/* Chat header */}
         <div style={{ padding:"16px 20px", borderBottom:"1px solid var(--border)", display:"flex", alignItems:"center", justifyContent:"space-between", flexShrink:0 }}>
           <div style={{ display:"flex", alignItems:"center", gap:10 }}>
             <div style={{ width:10, height:10, borderRadius:"50%", background:C.green, boxShadow:`0 0 10px ${C.green}`, animation:"pulse 2s infinite" }}/>
-            <span style={{ fontSize:14, fontWeight:600 }}>Empathy Interview</span>
+            <span style={{ fontSize:14, fontWeight:600 }}>Empathy Interview{userName ? ` — ${userName}` : ""}</span>
             <span style={{ fontSize:11, color:C.dim, background:"rgba(255,255,255,0.05)", borderRadius:20, padding:"2px 10px" }}>
               {phase === "interview" ? `Turn ${turnCount}` : phase.toUpperCase()}
             </span>
@@ -276,7 +609,7 @@ export default function EmpathyChat({ onNewResult }) {
           {messages.map((msg, i) => (
             <div key={i} style={{ display:"flex", flexDirection:"column", alignItems:msg.role === "user" ? "flex-end" : "flex-start" }}>
               <div style={{ fontSize:10, color:C.dim, marginBottom:4, padding:"0 4px" }}>
-                {msg.role === "user" ? "You" : "MindBridge AI"}
+                {msg.role === "user" ? (userName || "You") : "MindBridge AI"}
               </div>
               <div className={msg.role === "user" ? "chat-bubble-user" : "chat-bubble-ai"}>
                 <p style={{ fontSize:14, lineHeight:1.6, color:C.text, whiteSpace:"pre-wrap", margin:0 }}>
@@ -307,26 +640,72 @@ export default function EmpathyChat({ onNewResult }) {
             </div>
           )}
 
-          {/* Crisis panel */}
-          {crisisDetected && (
-            <div className="glass" style={{ padding:20, border:"1px solid rgba(248,113,113,0.4)", boxShadow:`0 0 30px rgba(248,113,113,0.2)` }}>
-              <div style={{ color:C.red, fontWeight:700, fontSize:15, marginBottom:12 }}>🚨 You're Not Alone — Crisis Support</div>
-              <p style={{ fontSize:13, color:C.muted, lineHeight:1.6, marginBottom:16 }}>
-                What you're feeling is real and it matters. Please reach out to one of these trained professionals right now:
+          {/* Crisis panel — 3-button design from plan */}
+          {crisisDetected && !crisisDismissed && (
+            <div className="crisis-panel">
+              <div style={{ color:C.red, fontWeight:700, fontSize:15, marginBottom:8 }}>🚨 I'm really concerned about you right now.</div>
+              <p style={{ fontSize:13, color:C.muted, lineHeight:1.6, marginBottom:0 }}>
+                Are you safe? Do you have someone nearby?
               </p>
-              {CRISIS_RESOURCES.map(r => (
-                <div key={r.name} style={{ display:"flex", justifyContent:"space-between", padding:"8px 12px", background:"rgba(248,113,113,0.08)", borderRadius:10, marginBottom:8, fontSize:13 }}>
-                  <span style={{ color:C.muted }}>{r.name}</span>
-                  <span style={{ color:C.red, fontWeight:700 }}>{r.contact}</span>
+
+              {/* 3-button row */}
+              <div className="crisis-actions">
+                <button
+                  className="crisis-btn safe"
+                  onClick={() => { setCrisisDismissed(true); setCrisisExpanded(false); }}
+                >✅ I'm safe</button>
+                <button
+                  className="crisis-btn"
+                  onClick={() => setCrisisExpanded(true)}
+                >🆘 I need help</button>
+                <button
+                  className="crisis-btn talk"
+                  onClick={() => { setCrisisDismissed(true); inputRef.current?.focus(); }}
+                >💬 Talk to me</button>
+              </div>
+
+              {/* Expanded resources */}
+              {crisisExpanded && (
+                <div>
+                  <div style={{ fontSize:12, color:C.muted, marginBottom:10, fontWeight:600 }}>Resources that can help right now:</div>
+                  {CRISIS_RESOURCES.map(r => (
+                    <div key={r.name} style={{ display:"flex", justifyContent:"space-between", padding:"8px 12px", background:"rgba(248,113,113,0.08)", borderRadius:10, marginBottom:8, fontSize:13 }}>
+                      <span style={{ color:C.muted }}>{r.name}</span>
+                      <span style={{ color:C.red, fontWeight:700 }}>{r.contact}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </div>
           )}
 
-          {/* Result */}
+          {/* Result + Session Close Ritual */}
           {phase === "result" && result && (
             <div className="glass" style={{ padding:24 }}>
               <ResultCard result={result}/>
+              {/* Progress celebration (if prior sessions exist) */}
+              {previousSessions.length > 0 && features && (
+                <ProgressCelebration
+                  current={features}
+                  previous={previousSessions.find(s => s.depression_score !== undefined) || null}
+                />
+              )}
+              {/* Closing ritual */}
+              <div className="close-ritual" style={{ marginTop:18 }}>
+                <div className="close-ritual-emoji">
+                  {result.risk?.toLowerCase() === "high" ? "🌙" :
+                   crisisDetected ? "🌙" : "💙"}
+                </div>
+                <p className="close-ritual-text">
+                  {crisisDetected
+                    ? `${userName ? `${userName}, you` : "You"} shared some heavy things today.\nThat takes courage.\n\nYou got through today. That's enough. Rest now.`
+                    : `${userName ? `I'll save this for you, ${userName}.` : "I'll save this conversation for you."}\n\nYou're not alone in this. Come back anytime — I'll be here.\n\nTake care of yourself. 💙`
+                  }
+                </p>
+                <button className="btn-primary" onClick={resetChat} style={{ padding:"12px 28px", fontSize:14 }}>
+                  🔄 Start New Interview
+                </button>
+              </div>
             </div>
           )}
 
@@ -342,20 +721,19 @@ export default function EmpathyChat({ onNewResult }) {
                 value={input}
                 onChange={e => setInput(e.target.value)}
                 onKeyDown={handleKey}
-                placeholder={crisisDetected ? "Please use the resources above..." : "Share how you're feeling... (Hinglish works too!)"}
-                disabled={isTyping || crisisDetected}
+                placeholder={crisisDetected && !crisisDismissed ? "Use the options above, or type here..." : "Share how you're feeling... (Hinglish works too!)"}
+                disabled={isTyping}
                 rows={2}
                 style={{
                   flex:1, background:"rgba(255,255,255,0.05)", border:"1px solid var(--border)", borderRadius:14,
                   padding:"12px 16px", color:C.text, fontFamily:"'DM Sans',sans-serif", fontSize:14,
                   outline:"none", resize:"none", lineHeight:1.5,
-                  opacity: crisisDetected ? 0.4 : 1,
                 }}
               />
               <button
                 className="btn-primary"
                 onClick={sendMessage}
-                disabled={!input.trim() || isTyping || crisisDetected}
+                disabled={!input.trim() || isTyping}
                 style={{ padding:"14px 22px", borderRadius:14, fontSize:18, flexShrink:0 }}
               >
                 →
@@ -368,13 +746,7 @@ export default function EmpathyChat({ onNewResult }) {
               {phase === "scoring" ? "Extracting clinical scores..." : "Running prediction model..."}
             </div>
           )}
-          {phase === "result" && (
-            <div style={{ display:"flex", gap:12, justifyContent:"center" }}>
-              <button className="btn-primary" onClick={resetChat} style={{ padding:"12px 24px", fontSize:14 }}>
-                🔄 Start New Interview
-              </button>
-            </div>
-          )}
+          {/* In result phase, the close ritual has its own New Interview button */}
           {/* Hint */}
           {phase === "interview" && !crisisDetected && (
             <div style={{ marginTop:8, fontSize:11, color:C.dim, textAlign:"center" }}>
@@ -384,8 +756,14 @@ export default function EmpathyChat({ onNewResult }) {
         </div>
       </div>
 
-      {/* RIGHT: Empathy Map panel */}
-      <EmpathyMapPanel empathyMap={empathyMap} confidencePct={confidencePct} turnCount={turnCount}/>
+      {/* RIGHT: Empathy Map panel — collapsible */}
+      <EmpathyMapPanel
+        empathyMap={empathyMap}
+        confidencePct={confidencePct}
+        turnCount={turnCount}
+        visible={mapVisible}
+        onToggle={() => setMapVisible(v => !v)}
+      />
     </div>
   );
 }

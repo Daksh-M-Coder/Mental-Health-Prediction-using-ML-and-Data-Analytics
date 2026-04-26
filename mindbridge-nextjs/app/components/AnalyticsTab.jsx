@@ -3,8 +3,14 @@ import { useState, useEffect } from "react";
 import { getHealth } from "../lib/api";
 
 const C = {
-  text:"#f0f4ff", muted:"rgba(240,244,255,0.55)", dim:"rgba(240,244,255,0.35)",
-  accent:"#6c8eff", green:"#4ade80", amber:"#fbbf24", red:"#f87171", purple:"#a78bfa",
+  text:  "var(--c-text)",
+  muted: "var(--c-muted)",
+  dim:   "var(--c-dim)",
+  accent:"var(--accent)",
+  green: "var(--green)",
+  amber: "var(--amber)",
+  red:   "var(--red)",
+  purple:"var(--purple)",
 };
 
 function StatBar({ label, value, pct, color }) {
@@ -36,7 +42,8 @@ function AnimatedNumber({ to, duration=1200 }) {
   return <span>{val}</span>;
 }
 
-export default function AnalyticsTab({ history }) {
+export default function AnalyticsTab({ results }) {
+  const history = results || [];   // ← safe fallback, never undefined
   const [health, setHealth] = useState(null);
   const [loadingHealth, setLoadingHealth] = useState(true);
 
@@ -48,12 +55,14 @@ export default function AnalyticsTab({ history }) {
   }, []);
 
   const total  = history.length;
-  const high   = history.filter(h => h.risk === "High").length;
-  const medium = history.filter(h => h.risk === "Medium").length;
-  const low    = history.filter(h => h.risk === "Low").length;
-  const avgConf = total ? Math.round(history.reduce((s,h)=>s+h.confidence,0)/total) : 0;
+  const high   = history.filter(h => h.risk === "High" || h.risk === "high").length;
+  const medium = history.filter(h => h.risk === "Medium" || h.risk === "medium").length;
+  const low    = history.filter(h => h.risk === "Low" || h.risk === "low").length;
+  const avgConf = total ? Math.round(history.reduce((s,h)=>s+(h.confidence||0),0)/total) : 0;
   const chatSource   = history.filter(h => h.source === "empathy-chat").length;
-  const manualSource = history.filter(h => h.source !== "empathy-chat").length;
+  const hybridSource = history.filter(h => h.source === "hybrid").length;
+  const manualSource = history.filter(h => h.source !== "empathy-chat" && h.source !== "hybrid").length;
+  const crisisCount  = history.filter(h => h.crisis).length;
 
   const dtcMetrics = health?.dtc_metrics || {};
   const accuracy   = dtcMetrics.accuracy   ? (dtcMetrics.accuracy * 100).toFixed(1)   : "98.7";
@@ -84,14 +93,21 @@ export default function AnalyticsTab({ history }) {
         <div style={{ marginTop:24, padding:16, background:"rgba(255,255,255,0.04)", borderRadius:12 }}>
           <div style={{ color:C.muted, fontSize:11, letterSpacing:1, fontWeight:600, marginBottom:12 }}>ASSESSMENT SOURCE</div>
           {[
-            { label:"🤝 Empathy Chat", count:chatSource,   color:C.accent },
-            { label:"⚕ Manual Form",  count:manualSource, color:C.purple },
+            { label:"🤝 Empathy Chat",  count:chatSource,   color:C.accent },
+            { label:"🧠 Hybrid Mode",   count:hybridSource, color:C.purple },
+            { label:"⚕ Manual Form",   count:manualSource, color:"#38bdf8" },
           ].map(({ label, count, color }) => (
             <div key={label} style={{ display:"flex", justifyContent:"space-between", marginBottom:8, fontSize:13 }}>
               <span style={{ color:C.muted }}>{label}</span>
               <span style={{ color, fontWeight:600 }}>{count} session{count !== 1 ? "s" : ""}</span>
             </div>
           ))}
+          {crisisCount > 0 && (
+            <div style={{ marginTop:10, padding:"8px 12px", background:"rgba(248,113,113,0.08)", borderRadius:8, fontSize:12, color:"#ef4444", display:"flex", justifyContent:"space-between" }}>
+              <span>🚨 Crisis sessions</span>
+              <span style={{ fontWeight:700 }}>{crisisCount}</span>
+            </div>
+          )}
         </div>
 
         {total === 0 && (
@@ -138,13 +154,22 @@ export default function AnalyticsTab({ history }) {
                 <span style={{ color:C.muted, fontSize:12 }}>{f.name}</span>
                 <span style={{ color:f.color, fontWeight:700, fontSize:12 }}>{f.pct}%</span>
               </div>
-              <div style={{ height:6, borderRadius:3, background:"rgba(255,255,255,0.08)" }}>
-                <div style={{ height:"100%", borderRadius:3, background:`linear-gradient(90deg,${f.color},${f.color}88)`, width:`${f.pct*2.5}%`, boxShadow:`0 0 8px ${f.color}66`, transition:"width 1.2s ease" }}/>
+              {/* Bar track */}
+              <div style={{ height:7, borderRadius:4, background:"rgba(255,255,255,0.08)", overflow:"hidden" }}>
+                <div style={{
+                  height:"100%",
+                  borderRadius:4,
+                  background:`linear-gradient(90deg, ${f.color}, ${f.color}88)`,
+                  width:`${Math.min(f.pct * 2.5, 100)}%`,
+                  boxShadow:`0 0 8px ${f.color}66`,
+                  transition:"width 1.2s ease",
+                }}/>
               </div>
             </div>
           ))}
         </div>
       </div>
+
 
       {/* Backend health */}
       <div className="glass" style={{ padding:28, gridColumn:"span 2" }}>

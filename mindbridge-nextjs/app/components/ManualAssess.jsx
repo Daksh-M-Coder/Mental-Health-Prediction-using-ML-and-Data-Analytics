@@ -4,14 +4,16 @@ import { predictDirect } from "../lib/api";
 
 // ── Color tokens (mirrored from globals.css) ──────────────────────────────
 const C = {
-  bg: "#0d0f1a", surface: "rgba(255,255,255,0.06)", border: "rgba(255,255,255,0.12)",
-  text: "#f0f4ff", muted: "rgba(240,244,255,0.55)", dim: "rgba(240,244,255,0.35)",
-  accent: "#6c8eff", accentGlow: "rgba(108,142,255,0.35)",
-  green: "#4ade80", greenGlow: "rgba(74,222,128,0.3)",
-  amber: "#fbbf24", amberGlow: "rgba(251,191,36,0.3)",
-  red: "#f87171", redGlow: "rgba(248,113,113,0.3)",
-  purple: "#a78bfa", neu: "#1a1d2e",
-  neuL: "rgba(60,70,110,0.5)", neuD: "rgba(5,6,15,0.7)",
+  // adaptive — light/dark via CSS vars
+  bg:"var(--bg)", surface:"var(--c-surface)", border:"var(--c-border)",
+  text:"var(--c-text)", muted:"var(--c-muted)", dim:"var(--c-dim)",
+  // status — stay vivid
+  accent:"var(--accent)", accentGlow:"var(--accent-glow)",
+  green:"var(--green)",   greenGlow:"var(--green-glow)",
+  amber:"var(--amber)",   amberGlow:"var(--amber-glow)",
+  red:"var(--red)",       redGlow:"var(--red-glow)",
+  purple:"var(--purple)", neu:"var(--neu)",
+  neuL:"var(--neu-light)", neuD:"var(--neu-dark)",
 };
 
 const FEATURES = [
@@ -21,13 +23,15 @@ const FEATURES = [
   { key:"work_environment",       label:"Work Env",        type:"select", options:["On-site","Remote","Hybrid"],            default:"On-site" },
   { key:"mental_health_history",  label:"MH History",      type:"select", options:["Yes","No"],                            default:"No" },
   { key:"seeks_treatment",        label:"Seeks Treatment", type:"select", options:["Yes","No"],                            default:"No" },
+  // higher = bad (red)
   { key:"stress_level",           label:"Stress Level",    type:"range",  min:1,  max:10,  default:5 },
-  { key:"sleep_hours",            label:"Sleep Hours",     type:"range",  min:2,  max:12,  default:7,  step:0.5 },
-  { key:"physical_activity_days", label:"Exercise Days/wk",type:"range",  min:0,  max:7,   default:3 },
   { key:"depression_score",       label:"Depression Score",type:"range",  min:0,  max:30,  default:10 },
   { key:"anxiety_score",          label:"Anxiety Score",   type:"range",  min:0,  max:21,  default:7 },
-  { key:"social_support_score",   label:"Social Support",  type:"range",  min:0,  max:100, default:50 },
-  { key:"productivity_score",     label:"Productivity",    type:"range",  min:0,  max:100, default:60 },
+  // higher = good (green) — inverted
+  { key:"sleep_hours",            label:"Sleep Hours",     type:"range",  min:2,  max:12,  default:7,  step:0.5, inverted:true },
+  { key:"physical_activity_days", label:"Exercise Days/wk",type:"range",  min:0,  max:7,   default:3,  inverted:true },
+  { key:"social_support_score",   label:"Social Support",  type:"range",  min:0,  max:100, default:50, inverted:true },
+  { key:"productivity_score",     label:"Productivity",    type:"range",  min:0,  max:100, default:60, inverted:true },
 ];
 
 const SAMPLES = [
@@ -58,15 +62,21 @@ function CircularProgress({ value, max, color, size = 72, label }) {
   const r = (size - 12) / 2;
   const circ = 2 * Math.PI * r;
   const offset = circ - (value / max) * circ;
+  const pct = Math.round((value / max) * 100);
   return (
     <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:6 }}>
-      <svg width={size} height={size} style={{ transform:"rotate(-90deg)" }}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth={6}/>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={6}
-          strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
-          style={{ transition:"stroke-dashoffset 1s cubic-bezier(0.4,0,0.2,1)", filter:`drop-shadow(0 0 6px ${color})` }}
-        />
-      </svg>
+      <div style={{ position:"relative", width:size, height:size }}>
+        <svg width={size} height={size} style={{ transform:"rotate(-90deg)", position:"absolute", top:0, left:0 }}>
+          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth={6}/>
+          <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={6}
+            strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
+            style={{ transition:"stroke-dashoffset 1s cubic-bezier(0.4,0,0.2,1)", filter:`drop-shadow(0 0 6px ${color})` }}
+          />
+        </svg>
+        <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}>
+          <span style={{ color, fontSize:size > 70 ? 13 : 11, fontWeight:700 }}>{pct}%</span>
+        </div>
+      </div>
       <span style={{ color:C.muted, fontSize:11, textAlign:"center", lineHeight:1.3 }}>{label}</span>
     </div>
   );
@@ -205,13 +215,21 @@ export default function ManualAssess({ onNewResult }) {
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20 }}>
             {FEATURES.filter(f => f.type === "range").map(f => {
               const pct = (values[f.key] - f.min) / (f.max - f.min);
-              const color = pct > 0.7 ? C.red : pct > 0.4 ? C.amber : C.green;
+              // Inverted: more = good (sleep, exercise, social, productivity)
+              // Normal:   more = bad (stress, depression, anxiety)
+              const color = f.inverted
+                ? (pct > 0.6 ? C.green : pct > 0.3 ? C.amber : C.red)
+                : (pct > 0.6 ? C.red   : pct > 0.3 ? C.amber : C.green);
+              const pctLabel = Math.round(pct * 100);
               const suffix = f.max <= 10 ? "/10" : f.max <= 21 ? "/21" : f.max <= 12 ? "h" : f.max <= 30 ? "/30" : "/100";
               return (
                 <div key={f.key}>
                   <div style={{ display:"flex", justifyContent:"space-between", marginBottom:8 }}>
                     <label style={{ color:C.muted, fontSize:12 }}>{f.label}</label>
-                    <span style={{ color, fontSize:13, fontWeight:700 }}>{values[f.key]}{suffix}</span>
+                    <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                      <span style={{ color, fontSize:13, fontWeight:700 }}>{values[f.key]}{suffix}</span>
+                      <span style={{ color, fontSize:10, opacity:0.7, background:`${color}22`, borderRadius:10, padding:"1px 6px" }}>{pctLabel}%</span>
+                    </div>
                   </div>
                   <RangeSlider value={values[f.key]} onChange={v => set(f.key, v)} min={f.min} max={f.max} step={f.step||1} color={color}/>
                 </div>
